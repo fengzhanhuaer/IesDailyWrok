@@ -72,48 +72,67 @@
         }
     }
 
+    // 从 Cookie 中读取指定 key 的值
+    function getCookieValue(name) {
+        const match = document.cookie.match(new RegExp('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)'));
+        return match ? decodeURIComponent(match[2]) : null;
+    }
+
     // 执行数据获取并导出
     async function exportData() {
-        const token = localStorage.getItem('Admin-Token') || sessionStorage.getItem('Admin-Token');
-        if (!token) {
-            alert('未找到认证信息(Token)，请确保您已登录并在正确的页面！');
-            return;
-        }
+        // 优先从 localStorage 取，再尝试 Cookie，再尝试 sessionStorage
+        const token = localStorage.getItem('Admin-Token')
+                   || getCookieValue('Admin-Token')
+                   || sessionStorage.getItem('Admin-Token');
 
         const btnInfo = document.querySelector('#export-log-btn');
-        btnInfo.innerText = "正在导出...";
+        btnInfo.innerText = '正在导出...';
         btnInfo.disabled = true;
 
         try {
             // shzt=2 代表审批完成
             const apiUrl = `/api/hr/workLog/list?shzt=2&pageNum=1&pageSize=3000&beginTime=${startDateStr}&endTime=${endDateStr}`;
-            
+            console.log('[工时导出] 请求 URL:', apiUrl);
+            console.log('[工时导出] Token:', token ? token.substring(0, 20) + '...' : '未找到');
+
+            // 构建请求头：携带 Cookie 会话（credentials: include）同时附带 Token
+            const headers = { 'Content-Type': 'application/json' };
+            if (token) headers['Authorization'] = `Bearer ${token}`;
+
             const response = await fetch(apiUrl, {
                 method: 'GET',
-                headers: {
-                    'Authorization': `Bearer ${token}`,
-                    'Content-Type': 'application/json'
-                }
+                headers,
+                credentials: 'include'  // 关键：携带浏览器 Cookie（会话凭证）
             });
 
             if (!response.ok) {
-                throw new Error(`网络响应错误: ${response.status}`);
+                throw new Error(`服务器返回错误状态: ${response.status} ${response.statusText}`);
             }
 
             const data = await response.json();
-            
+            console.log('[工时导出] 响应:', JSON.stringify(data).substring(0, 300));
+
             if (data && data.rows && data.rows.length > 0) {
                 const csvData = convertToCSV(data.rows);
                 downloadCSV(csvData, `工作日志_${startDateStr}_至_${endDateStr}.csv`);
-                alert(`成功导出 ${data.rows.length} 条记录！`);
+                alert(`✅ 成功导出 ${data.rows.length} 条记录！\n（服务器共返回 ${data.total} 条）`);
             } else {
-                alert(`该日期区间 (${startDateStr} 至 ${endDateStr}) 内没有审批完成的数据！`);
+                // 显示详细信息帮助排查
+                const debugInfo = [
+                    `日期区间: ${startDateStr} 至 ${endDateStr}`,
+                    `请求URL: ${apiUrl}`,
+                    `响应code: ${data?.code}`,
+                    `响应msg: ${data?.msg}`,
+                    `返回total: ${data?.total}`,
+                    `Token状态: ${token ? '已找到' : '未找到（可能是认证问题）'}`,
+                ].join('\n');
+                alert(`⚠️ 该日期区间内没有数据\n\n【调试信息】\n${debugInfo}`);
             }
         } catch (error) {
-            console.error('导出失败:', error);
-            alert('导出失败，请查看浏览器控制台了解详情。');
+            console.error('[工时导出] 失败:', error);
+            alert(`❌ 导出失败\n\n错误信息: ${error.message}\n\n请打开浏览器控制台 (F12) 查看详细日志。`);
         } finally {
-            btnInfo.innerText = "一键导出";
+            btnInfo.innerText = '一键导出';
             btnInfo.disabled = false;
         }
     }
