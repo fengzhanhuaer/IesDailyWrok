@@ -6,6 +6,8 @@
 // @author       Assistant
 // @match        *://172.20.10.80/hr/work/workLogmy*
 // @grant        GM_download
+// @updateURL    https://raw.githubusercontent.com/fengzhanhuaer/IesDailyWrok/main/worklog_export.user.js
+// @downloadURL  https://raw.githubusercontent.com/fengzhanhuaer/IesDailyWrok/main/worklog_export.user.js
 // ==/UserScript==
 
 (function() {
