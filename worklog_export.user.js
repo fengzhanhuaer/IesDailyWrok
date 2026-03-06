@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         工时日志一键导出
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      2.3
 // @description  在工时日志页面添加一键导出按选择日期范围出CSV文件的功能
 // @author       Assistant
 // @match        *://172.20.10.80/hr/work/workLogmy*
@@ -26,13 +26,9 @@
         return [year, month, day].join('-');
     }
 
-    // 获取当前月的第一天和最后一天
-    const today = new Date();
-    const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
-    const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-
-    let startDateStr = formatDate(firstDay);
-    let endDateStr = formatDate(lastDay);
+    // 默认页码范围
+    let startPage = 1;
+    let endPage = 10;
 
     // 导出文件函数
     function downloadCSV(csv, filename) {
@@ -51,7 +47,15 @@
 
     // 执行纯前端数据抓取并导出
     async function exportData() {
-        if (!confirm(`导出区间：${startDateStr} 至 ${endDateStr}\n\n脚本将自动从第一页开始翻页抓取符合日期区间的所有记录。\n点击【确定】开始。`)) {
+        startPage = parseInt(document.querySelector('#export-start-page').value, 10);
+        endPage = parseInt(document.querySelector('#export-end-page').value, 10);
+
+        if (isNaN(startPage) || isNaN(endPage) || startPage < 1 || startPage > endPage) {
+            alert('请填写正确的页码范围！\n起始页必须 >= 1，且不能大于结束页。');
+            return;
+        }
+
+        if (!confirm(`准备导出：从 第 ${startPage} 页 到 第 ${endPage} 页\n\n脚本将自动翻看这些页并抓取所有可见数据。\n点击【确定】开始。`)) {
             return;
         }
 
@@ -61,79 +65,132 @@
 
         try {
             let allData = [];
-            let isLastPage = false;
-
+            
             // 等待函数
             const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-            // 计算早停截止日期：起始日期往前推 60 天
-            // 注意：仅在已收集到范围内数据后才触发，避免升序排列时第一页就被截断
-            const cutoffDate = new Date(startDateStr);
-            cutoffDate.setDate(cutoffDate.getDate() - 60);
-            const cutoffDateStr = formatDate(cutoffDate);
-
-            // 自动跳回第一页
-            btnInfo.innerText = '跳回第一页...';
-            const allPageBtns = document.querySelectorAll('.el-pagination .el-pager li.number');
-            if (allPageBtns.length > 0) {
-                allPageBtns[0].click();
-                await wait(1500);
+            // 安全到达目标页的辅助函数
+            async function goToPage(target) {
+                let attempts = 0;
+                while (attempts < 50) { // 最多试 50 次防止死循环
+                    let activeLi = document.querySelector('.el-pagination .el-pager li.active') || document.querySelector('.el-pagination .el-pager li.is-active');
+                    let curr = activeLi ? parseInt(activeLi.innerText, 10) : 1;
+                    
+                    if (curr === target) return true;
+                    
+                    // 1. 如果目标页签直接在可视范围内，直接点击
+                    let allLis = document.querySelectorAll('.el-pagination .el-pager li.number');
+                    let targetLi = Array.from(allLis).find(li => parseInt(li.innerText, 10) === target);
+                    if (targetLi) {
+                        targetLi.click();
+                        await wait(1000);
+                        continue;
+                    }
+                    
+                    // 2. 如果没能直接点击到，就通过下一页/上一页按钮逼近
+                    if (curr < target) {
+                        let nextBtn = document.querySelector('.btn-next');
+                        if (!nextBtn || nextBtn.disabled || nextBtn.classList.contains('is-disabled')) return false;
+                        nextBtn.click();
+                    } else {
+                        let prevBtn = document.querySelector('.btn-prev');
+                        if (!prevBtn || prevBtn.disabled || prevBtn.classList.contains('is-disabled')) return false;
+                        prevBtn.click();
+                    }
+                    await wait(800);
+                    attempts++;
+                }
+                return false;
             }
 
-            let pageCount = 1;
-            // 循环翻页抓取
-            while (!isLastPage) {
-                btnInfo.innerText = `抓取第 ${pageCount} 页...`;
+            // 执行实际跳页
+            btnInfo.innerText = `准备跳到第 ${startPage} 页...`;
+            let reached = await goToPage(startPage);
+            if (!reached) {
+                 alert(`跳转到第 ${startPage} 页失败！请检查页码是否超出最大范围。`);
+                 btnInfo.innerText = '一键导出';
+                 btnInfo.disabled = false;
+                 return;
+            }
+            
+            // ❗ 关键修复：到达目标起始页后，必须等待表格网络请求真正完成加载
+            btnInfo.innerText = `正在加载第 ${startPage} 页数据...`;
+            await wait(2000); 
 
-                // 获取表头
-                const headerCells = document.querySelectorAll('thead th, .el-table__header th');
-                const headers = Array.from(headerCells).map(th => th.innerText.trim().replace(/[\r\n]+/g, ' '));
+            let currentPage = startPage;
+
+            // 开始从起始页按序翻到结束页
+            while (currentPage <= endPage) {
+                btnInfo.innerText = `正在抓取第 ${currentPage} 页...`;
+
+                // ⚡ 只取主体区域的表头，避免固定列的重复导致列名对应错乱
+                const headerWrapper = document.querySelector(
+                    '.el-table__header-wrapper thead, .el-table__body-wrapper thead'
+                );
+                const headers = headerWrapper
+                    ? Array.from(headerWrapper.querySelectorAll('th')).map(th => th.innerText.trim().replace(/[\r\n]+/g, ' '))
+                    : [];
 
                 if (headers.length > 0) {
-                    // 获取当前页的行
-                    const rows = document.querySelectorAll('tbody tr, .el-table__body tr');
-                    rows.forEach(tr => {
+                    console.log(`[调试] 第${currentPage}页 表头:`, headers);
+
+                    // ⚡ 只取主体 wrapper 里的 tr
+                    const bodyWrapper = document.querySelector('.el-table__body-wrapper');
+                    const rows = bodyWrapper ? bodyWrapper.querySelectorAll('tbody tr') : [];
+                    console.log(`[调试] 第${currentPage}页 找到 ${rows.length} 行数据`);
+
+                    rows.forEach((tr, idx) => {
                         const cells = Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim());
                         if (cells.length > 0) {
                             let rowObj = {};
                             headers.forEach((h, i) => {
                                 if (h) rowObj[h] = cells[i];
                             });
-
-                            // 本地日期过滤（统一格式：YYYY/MM/DD → YYYY-MM-DD）
-                            let dateStr = rowObj['工作时间'] || rowObj['日期'] || '';
-                            dateStr = dateStr.slice(0, 10).replace(/\//g, '-');
-
-                            if (!dateStr || (dateStr >= startDateStr && dateStr <= endDateStr)) {
-                                allData.push(rowObj);
-                            }
-
-                            // 早停：仅在已收集到范围内数据后，遇到比截止日期更早的数据才停止
-                            if (dateStr && allData.length > 0 && dateStr < cutoffDateStr) {
-                                console.log(`[工时导出] 数据日期 ${dateStr} 早于截止日期 ${cutoffDateStr}，停止翻页。`);
-                                isLastPage = true;
-                            }
+                            
+                            // 因为此时是按照页数强制抓取，无视任何日期判定，所见即所得
+                            allData.push(rowObj);
+                            console.log(`[调试] 行${idx} 添加成功`);
                         }
                     });
                 }
 
-                // 已被早停标记则跳出
-                if (isLastPage) break;
+                // 判断是否已经抓完最后一页要求，或者是由于页面真没有了提前撞墙
+                if (currentPage >= endPage) {
+                     break;
+                }
 
-                // 检查是否有下一页按钮且可用
+                // 继续点下一页按钮
                 const nextBtn = document.querySelector('.btn-next');
                 if (nextBtn && !nextBtn.disabled && !nextBtn.classList.contains('is-disabled') && nextBtn.getAttribute('aria-disabled') !== 'true') {
                     nextBtn.click();
-                    pageCount++;
+                    currentPage++;
                     await wait(800);
                 } else {
-                    isLastPage = true;
+                    console.log('[调试] 已经没有下一页了，提前结束抓取。');
+                    break;
                 }
             }
 
             if (allData.length > 0) {
                 // 去重（防止动态翻页时抓到重复 DOM）
                 const uniqueData = Array.from(new Set(allData.map(JSON.stringify))).map(JSON.parse);
+                
+                // 提取最老和最新日期用于构建文件名，绝不改变导出原数据中的日期格式
+                let earliestDate = "未知";
+                let latestDate = "未知";
+                
+                const dates = uniqueData.map(row => {
+                    let d = row['工作时间'] || row['日期'] || '';
+                    // 取纯日期部分，并把斜线转为短横线（因为文件名里不能带 /）
+                    return d.split(' ')[0].replace(/\//g, '-');
+                }).filter(d => Boolean(d));
+
+                if (dates.length > 0) {
+                    // 按时间戳升序排序
+                    dates.sort((a, b) => new Date(a.replace(/-/g, '/')).getTime() - new Date(b.replace(/-/g, '/')).getTime());
+                    earliestDate = dates[0];
+                    latestDate = dates[dates.length - 1];
+                }
                 
                 // 将对象转为 CSV
                 let csvStr = '\uFEFF'; // BOM 头
@@ -148,10 +205,16 @@
                     csvStr += line + '\r\n';
                 });
                 
-                downloadCSV(csvStr, `工作日志_${startDateStr}_至_${endDateStr}_本地抓取.csv`);
-                alert(`✅ 抓取完成！\n共翻看 ${pageCount} 页，成功为您提取并导出符合日期范围的 ${uniqueData.length} 条记录！`);
+                // 构建文件名：最老日期_至_最新日期
+                let fileName = `工作日志_${earliestDate}_至_${latestDate}_本地抓取.csv`;
+                if (earliestDate === latestDate) {
+                    fileName = `工作日志_${earliestDate}_本地抓取.csv`;
+                }
+                
+                downloadCSV(csvStr, fileName);
+                alert(`✅ 抓取完成！\n成功提取并导出 ${uniqueData.length} 条记录！`);
             } else {
-                alert(`⚠️ 共翻看 ${pageCount} 页，未找到 ${startDateStr} 至 ${endDateStr} 区间内的数据。\n请确认页面列表已加载，或尝试在页面先手动检索后再导出。`);
+                alert(`⚠️ 在第 ${startPage} 到 ${endPage} 页中没有抓取到任何数据！`);
             }
 
         } catch (error) {
@@ -177,10 +240,11 @@
             customDiv.style.cssText = 'display: inline-flex; align-items: center; margin-left: 20px; gap: 10px; padding: 5px; background: #f5f7fa; border-radius: 4px; border: 1px solid #dcdfe6;';
             
             customDiv.innerHTML = `
-                <span style="font-size:14px; color:#606266;">导出区间:</span>
-                <input type="date" id="export-start-date" value="${startDateStr}" style="border:1px solid #dcdfe6; border-radius:4px; padding:3px 8px; height:28px; outline:none;">
+                <span style="font-size:14px; color:#606266;">导出页码:</span>
+                <input type="number" id="export-start-page" value="${startPage}" min="1" style="border:1px solid #dcdfe6; border-radius:4px; padding:3px 8px; height:28px; outline:none; width: 60px;">
                 <span style="font-size:14px; color:#606266;">至</span>
-                <input type="date" id="export-end-date" value="${endDateStr}" style="border:1px solid #dcdfe6; border-radius:4px; padding:3px 8px; height:28px; outline:none;">
+                <input type="number" id="export-end-page" value="${endPage}" min="1" style="border:1px solid #dcdfe6; border-radius:4px; padding:3px 8px; height:28px; outline:none; width: 60px;">
+                <span style="font-size:14px; color:#606266;">页</span>
                 <button type="button" id="export-log-btn" style="display:inline-block; line-height:1; white-space:nowrap; cursor:pointer; background:#67c23a; border:none; color:#fff; text-align:center; box-sizing:border-box; outline:none; margin:0; transition:.1s; font-weight:500; padding:7px 15px; font-size:12px; border-radius:4px; margin-left: 5px;">一键导出</button>
             `;
 
@@ -188,12 +252,6 @@
             container.appendChild(customDiv);
 
             // 绑定事件
-            document.querySelector('#export-start-date').addEventListener('change', (e) => {
-                startDateStr = e.target.value;
-            });
-            document.querySelector('#export-end-date').addEventListener('change', (e) => {
-                endDateStr = e.target.value;
-            });
             document.querySelector('#export-log-btn').addEventListener('click', exportData);
         }
     }
