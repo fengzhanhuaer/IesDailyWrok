@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         工时日志一键导出
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  在工时日志页面添加一键导出按选择日期范围出CSV文件的功能
 // @author       Assistant
 // @match        *://172.20.10.80/hr/work/workLogmy*
@@ -183,12 +183,32 @@
         }
     }
 
+    // 检查当前页面是否处于 dispatch tab
+    function isDispatchTab() {
+        return new URLSearchParams(window.location.search).get('activeTab') === 'dispatch';
+    }
+
+    // 移除已注入的 UI
+    function removeUI() {
+        const btn = document.querySelector('#export-log-btn');
+        if (btn) {
+            // 找到外层容器（按钮的父节点）并移除
+            const wrapper = btn.closest('div[style]');
+            if (wrapper) wrapper.remove();
+            else btn.remove();
+        }
+    }
+
     // 监控页面变化，因为是 Vue 单页应用，DOM 可能是动态加载的
     const observer = new MutationObserver((mutations, obs) => {
-        const formEl = document.querySelector('.el-form');
-        if (formEl && !document.querySelector('#export-log-btn')) {
-            // 确保已经切换到了审批完成 tab
-            injectUI();
+        if (isDispatchTab()) {
+            const formEl = document.querySelector('.el-form');
+            if (formEl && !document.querySelector('#export-log-btn')) {
+                injectUI();
+            }
+        } else {
+            // 不在 dispatch tab 时，移除已注入的按钮
+            removeUI();
         }
     });
 
@@ -197,7 +217,9 @@
         subtree: true
     });
 
-    // 初始尝试注入
-    setTimeout(injectUI, 2000);
+    // 初始尝试注入（仅在 dispatch tab 时）
+    setTimeout(() => {
+        if (isDispatchTab()) injectUI();
+    }, 2000);
 
 })();
