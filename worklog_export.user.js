@@ -62,9 +62,14 @@
         try {
             let allData = [];
             let isLastPage = false;
-            
+
             // 等待函数
             const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+            // 计算截止日期：起始日期往前推 60 天，超过这个日期的数据就不再拉取
+            const cutoffDate = new Date(startDateStr);
+            cutoffDate.setDate(cutoffDate.getDate() - 60);
+            const cutoffDateStr = formatDate(cutoffDate);
 
             // 先尝试回到第一页
             const firstPageBtn = document.querySelector('.el-pagination .el-pager li.number');
@@ -81,7 +86,7 @@
                 // 获取表头
                 const headerCells = document.querySelectorAll('thead th, .el-table__header th');
                 const headers = Array.from(headerCells).map(th => th.innerText.trim().replace(/[\r\n]+/g, ' '));
-                
+
                 if (headers.length > 0) {
                     // 获取当前页的行
                     const rows = document.querySelectorAll('tbody tr, .el-table__body tr');
@@ -92,18 +97,26 @@
                             headers.forEach((h, i) => {
                                 if (h) rowObj[h] = cells[i];
                             });
-                            
+
                             // 利用自定义的日期框做本地二次过滤
                             let dateStr = rowObj['工作时间'] || rowObj['日期'] || '';
-                            // 稍微处理一下抓取到的日期里的多余空格
                             dateStr = dateStr.slice(0, 10);
-                            
+
                             if (!dateStr || (dateStr >= startDateStr && dateStr <= endDateStr)) {
                                 allData.push(rowObj);
+                            }
+
+                            // 超出截止日期（比起始日期早 60 天以上），停止继续翻页
+                            if (dateStr && dateStr < cutoffDateStr) {
+                                console.log(`[工时导出] 数据日期 ${dateStr} 已超出截止日期 ${cutoffDateStr}，停止翻页。`);
+                                isLastPage = true;
                             }
                         }
                     });
                 }
+
+                // 如果已被早停标记则不再翻页
+                if (isLastPage) break;
 
                 // 检查是否有下一页按钮且可用
                 const nextBtn = document.querySelector('.btn-next');
