@@ -34,31 +34,6 @@
     let startDateStr = formatDate(firstDay);
     let endDateStr = formatDate(lastDay);
 
-    // 将 JSON 数据转为 CSV 格式
-    function convertToCSV(objArray) {
-        const array = typeof objArray !== 'object' ? JSON.parse(objArray) : objArray;
-        // 表头
-        const headers = ['姓名', '工号', '工作时间', '工作大类', '项目类型', '工作子类', '对应产品线', '产品号', '工作描述', '工时(h)', '审核人'];
-        const keys = ['lastname', 'workcode', 'workTime', 'workCategoryName', 'xmlxName', 'gzzlName', 'dycpxName', 'productNumber', 'workDescription', 'hoursWorked', 'reviewerName'];
-
-        let str = '\uFEFF'; // BOM 确保 Excel 正常识别中文字符
-        str += headers.join(',') + '\r\n';
-
-        for (let i = 0; i < array.length; i++) {
-            let line = '';
-            for (let index in keys) {
-                if (line !== '') line += ',';
-                // 替换内容中的逗号、换行符等，防止破坏 CSV 结构
-                let value = array[i][keys[index]] || '';
-                value = value.toString().replace(/"/g, '""'); // 转义双引号
-                value = value.toString().replace(/[\r\n]+/g, ' '); // 替换换行符为空格
-                line += `"${value}"`;
-            }
-            str += line + '\r\n';
-        }
-        return str;
-    }
-
     // 导出文件函数
     function downloadCSV(csv, filename) {
         let blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
@@ -74,65 +49,99 @@
         }
     }
 
-    // 从 Cookie 中读取指定 key 的值
-    function getCookieValue(name) {
-        const match = document.cookie.match(new RegExp('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)'));
-        return match ? decodeURIComponent(match[2]) : null;
-    }
-
-    // 执行数据获取并导出
+    // 执行纯前端数据抓取并导出
     async function exportData() {
-        // 优先从 localStorage 取，再尝试 Cookie，再尝试 sessionStorage
-        const token = localStorage.getItem('Admin-Token')
-                   || getCookieValue('Admin-Token')
-                   || sessionStorage.getItem('Admin-Token');
+        if (!confirm('提示：\n由于接口访问受限，脚本将采用【模拟页面自动翻页】的方式提取数据。\n\n请确保您已经使用页面自带的 [检索] 按钮，查询出了需要导出的数据列表！\n\n点击【确定】开始自动翻页抓取。')) {
+            return;
+        }
 
         const btnInfo = document.querySelector('#export-log-btn');
-        btnInfo.innerText = '正在导出...';
+        btnInfo.innerText = '正在自动翻页抓取...';
         btnInfo.disabled = true;
 
         try {
-            // shzt=2 代表审批完成
-            const apiUrl = `/api/hr/workLog/list?shzt=2&pageNum=1&pageSize=3000&beginTime=${startDateStr}&endTime=${endDateStr}`;
-            console.log('[工时导出] 请求 URL:', apiUrl);
-            console.log('[工时导出] Token:', token ? token.substring(0, 20) + '...' : '未找到');
+            let allData = [];
+            let isLastPage = false;
+            
+            // 等待函数
+            const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-            // 构建请求头：携带 Cookie 会话（credentials: include）同时附带 Token
-            const headers = { 'Content-Type': 'application/json' };
-            if (token) headers['Authorization'] = `Bearer ${token}`;
-
-            const response = await fetch(apiUrl, {
-                method: 'GET',
-                headers,
-                credentials: 'include'  // 关键：携带浏览器 Cookie（会话凭证）
-            });
-
-            if (!response.ok) {
-                throw new Error(`服务器返回错误状态: ${response.status} ${response.statusText}`);
+            // 先尝试回到第一页
+            const firstPageBtn = document.querySelector('.el-pagination .el-pager li.number');
+            if (firstPageBtn && !firstPageBtn.classList.contains('is-active') && !firstPageBtn.classList.contains('active')) {
+                firstPageBtn.click();
+                await wait(1500); // 等待第一页加载
             }
 
-            const data = await response.json();
-            console.log('[工时导出] 响应:', JSON.stringify(data).substring(0, 300));
+            let pageCount = 1;
+            // 循环翻页抓取
+            while (!isLastPage) {
+                btnInfo.innerText = `抓取第 ${pageCount} 页...`;
 
-            if (data && data.rows && data.rows.length > 0) {
-                const csvData = convertToCSV(data.rows);
-                downloadCSV(csvData, `工作日志_${startDateStr}_至_${endDateStr}.csv`);
-                alert(`✅ 成功导出 ${data.rows.length} 条记录！\n（服务器共返回 ${data.total} 条）`);
+                // 获取表头
+                const headerCells = document.querySelectorAll('thead th, .el-table__header th');
+                const headers = Array.from(headerCells).map(th => th.innerText.trim().replace(/[\r\n]+/g, ' '));
+                
+                if (headers.length > 0) {
+                    // 获取当前页的行
+                    const rows = document.querySelectorAll('tbody tr, .el-table__body tr');
+                    rows.forEach(tr => {
+                        const cells = Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim());
+                        if (cells.length > 0) {
+                            let rowObj = {};
+                            headers.forEach((h, i) => {
+                                if (h) rowObj[h] = cells[i];
+                            });
+                            
+                            // 利用自定义的日期框做本地二次过滤
+                            let dateStr = rowObj['工作时间'] || rowObj['日期'] || '';
+                            // 稍微处理一下抓取到的日期里的多余空格
+                            dateStr = dateStr.slice(0, 10);
+                            
+                            if (!dateStr || (dateStr >= startDateStr && dateStr <= endDateStr)) {
+                                allData.push(rowObj);
+                            }
+                        }
+                    });
+                }
+
+                // 检查是否有下一页按钮且可用
+                const nextBtn = document.querySelector('.btn-next');
+                if (nextBtn && !nextBtn.disabled && !nextBtn.classList.contains('is-disabled') && nextBtn.getAttribute('aria-disabled') !== 'true') {
+                    nextBtn.click();
+                    pageCount++;
+                    await wait(800); // 必须等待页面渲染下一页并从缓存读取
+                } else {
+                    isLastPage = true;
+                }
+            }
+
+            if (allData.length > 0) {
+                // 去重（防止动态翻页时抓到重复 DOM）
+                const uniqueData = Array.from(new Set(allData.map(JSON.stringify))).map(JSON.parse);
+                
+                // 将对象转为 CSV
+                let csvStr = '\uFEFF'; // BOM 头
+                let finalHeaders = Object.keys(uniqueData[0]).filter(h => h && h !== '操作'); // 过滤掉“操作”列之类
+                csvStr += finalHeaders.join(',') + '\r\n';
+                
+                uniqueData.forEach(row => {
+                    let line = finalHeaders.map(h => {
+                        let val = (row[h] || '').toString().replace(/"/g, '""').replace(/[\r\n]+/g, ' ');
+                        return `"${val}"`;
+                    }).join(',');
+                    csvStr += line + '\r\n';
+                });
+                
+                downloadCSV(csvStr, `工作日志_${startDateStr}_至_${endDateStr}_本地抓取.csv`);
+                alert(`✅ 抓取完成！\n共翻看 ${pageCount} 页，成功为您提取并导出符合日期范围的 ${uniqueData.length} 条记录！`);
             } else {
-                // 显示详细信息帮助排查
-                const debugInfo = [
-                    `日期区间: ${startDateStr} 至 ${endDateStr}`,
-                    `请求URL: ${apiUrl}`,
-                    `响应code: ${data?.code}`,
-                    `响应msg: ${data?.msg}`,
-                    `返回total: ${data?.total}`,
-                    `Token状态: ${token ? '已找到' : '未找到（可能是认证问题）'}`,
-                ].join('\n');
-                alert(`⚠️ 该日期区间内没有数据\n\n【调试信息】\n${debugInfo}`);
+                alert(`⚠️ 在当前列表中没有找到限定日期区间 (${startDateStr} 至 ${endDateStr}) 的数据！\n请注意：脚本只能抓取页面上已有的数据，请先检索。`);
             }
+
         } catch (error) {
-            console.error('[工时导出] 失败:', error);
-            alert(`❌ 导出失败\n\n错误信息: ${error.message}\n\n请打开浏览器控制台 (F12) 查看详细日志。`);
+            console.error('[工时导出] 抓取失败:', error);
+            alert(`❌ 抓取失败\n\n错误信息: ${error.message}\n如果页面元素发生变动会导致此报错。`);
         } finally {
             btnInfo.innerText = '一键导出';
             btnInfo.disabled = false;
