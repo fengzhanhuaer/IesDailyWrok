@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         工时日志一键导出
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  在工时日志页面添加一键导出按选择日期范围出CSV文件的功能
 // @author       Assistant
 // @match        *://172.20.10.80/hr/work/workLogmy*
@@ -51,12 +51,12 @@
 
     // 执行纯前端数据抓取并导出
     async function exportData() {
-        if (!confirm('提示：\n由于接口访问受限，脚本将采用【模拟页面自动翻页】的方式提取数据。\n\n请确保您已经使用页面自带的 [检索] 按钮，查询出了需要导出的数据列表！\n\n点击【确定】开始自动翻页抓取。')) {
+        if (!confirm(`导出区间：${startDateStr} 至 ${endDateStr}\n\n脚本将自动从第一页开始翻页抓取符合日期区间的所有记录。\n点击【确定】开始。`)) {
             return;
         }
 
         const btnInfo = document.querySelector('#export-log-btn');
-        btnInfo.innerText = '正在自动翻页抓取...';
+        btnInfo.innerText = '正在准备...';
         btnInfo.disabled = true;
 
         try {
@@ -66,16 +66,18 @@
             // 等待函数
             const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-            // 计算截止日期：起始日期往前推 60 天，超过这个日期的数据就不再拉取
+            // 计算早停截止日期：起始日期往前推 60 天
+            // 注意：仅在已收集到范围内数据后才触发，避免升序排列时第一页就被截断
             const cutoffDate = new Date(startDateStr);
             cutoffDate.setDate(cutoffDate.getDate() - 60);
             const cutoffDateStr = formatDate(cutoffDate);
 
-            // 先尝试回到第一页
-            const firstPageBtn = document.querySelector('.el-pagination .el-pager li.number');
-            if (firstPageBtn && !firstPageBtn.classList.contains('is-active') && !firstPageBtn.classList.contains('active')) {
-                firstPageBtn.click();
-                await wait(1500); // 等待第一页加载
+            // 自动跳回第一页
+            btnInfo.innerText = '跳回第一页...';
+            const allPageBtns = document.querySelectorAll('.el-pagination .el-pager li.number');
+            if (allPageBtns.length > 0) {
+                allPageBtns[0].click();
+                await wait(1500);
             }
 
             let pageCount = 1;
@@ -98,7 +100,7 @@
                                 if (h) rowObj[h] = cells[i];
                             });
 
-                            // 利用自定义的日期框做本地二次过滤
+                            // 本地日期过滤
                             let dateStr = rowObj['工作时间'] || rowObj['日期'] || '';
                             dateStr = dateStr.slice(0, 10);
 
@@ -106,16 +108,16 @@
                                 allData.push(rowObj);
                             }
 
-                            // 超出截止日期（比起始日期早 60 天以上），停止继续翻页
-                            if (dateStr && dateStr < cutoffDateStr) {
-                                console.log(`[工时导出] 数据日期 ${dateStr} 已超出截止日期 ${cutoffDateStr}，停止翻页。`);
+                            // 早停：仅在已收集到范围内数据后，遇到比截止日期更早的数据才停止
+                            if (dateStr && allData.length > 0 && dateStr < cutoffDateStr) {
+                                console.log(`[工时导出] 数据日期 ${dateStr} 早于截止日期 ${cutoffDateStr}，停止翻页。`);
                                 isLastPage = true;
                             }
                         }
                     });
                 }
 
-                // 如果已被早停标记则不再翻页
+                // 已被早停标记则跳出
                 if (isLastPage) break;
 
                 // 检查是否有下一页按钮且可用
@@ -123,7 +125,7 @@
                 if (nextBtn && !nextBtn.disabled && !nextBtn.classList.contains('is-disabled') && nextBtn.getAttribute('aria-disabled') !== 'true') {
                     nextBtn.click();
                     pageCount++;
-                    await wait(800); // 必须等待页面渲染下一页并从缓存读取
+                    await wait(800);
                 } else {
                     isLastPage = true;
                 }
@@ -149,7 +151,7 @@
                 downloadCSV(csvStr, `工作日志_${startDateStr}_至_${endDateStr}_本地抓取.csv`);
                 alert(`✅ 抓取完成！\n共翻看 ${pageCount} 页，成功为您提取并导出符合日期范围的 ${uniqueData.length} 条记录！`);
             } else {
-                alert(`⚠️ 在当前列表中没有找到限定日期区间 (${startDateStr} 至 ${endDateStr}) 的数据！\n请注意：脚本只能抓取页面上已有的数据，请先检索。`);
+                alert(`⚠️ 共翻看 ${pageCount} 页，未找到 ${startDateStr} 至 ${endDateStr} 区间内的数据。\n请确认页面列表已加载，或尝试在页面先手动检索后再导出。`);
             }
 
         } catch (error) {
