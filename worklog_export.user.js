@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         工时日志一键导出
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      1.3
 // @description  在工时日志页面添加一键导出按选择日期范围出CSV文件的功能
 // @author       Assistant
 // @match        *://172.20.10.80/hr/work/workLogmy*
@@ -100,9 +100,9 @@
                                 if (h) rowObj[h] = cells[i];
                             });
 
-                            // 本地日期过滤
+                            // 本地日期过滤（统一格式：YYYY/MM/DD → YYYY-MM-DD）
                             let dateStr = rowObj['工作时间'] || rowObj['日期'] || '';
-                            dateStr = dateStr.slice(0, 10);
+                            dateStr = dateStr.slice(0, 10).replace(/\//g, '-');
 
                             if (!dateStr || (dateStr >= startDateStr && dateStr <= endDateStr)) {
                                 allData.push(rowObj);
